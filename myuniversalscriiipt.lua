@@ -16,14 +16,14 @@ _G.BuildSettings = {
     DeleteMode = false
 }
 
-_G.DATA_PREFIX = "MH_"
+_G.DATA_PREFIX = "📢"
 _G.CurrentPreview = nil
 _G.PreviewChildren = {}
 _G.ProcessedPackets = {}
 _G.MyPlacedObjects = {}
 
-_G.ShapeMap = {["Block"]="1", ["Ball"]="2", ["Cylinder"]="3", ["Wedge"]="4", ["Window"]="5"}
-_G.ShapeReverseMap = {["1"]="Block", ["2"]="Ball", ["3"]="Cylinder", ["4"]="Wedge", ["5"]="Window"}
+_G.ShapeMap = {["Block"]="B", ["Ball"]="S", ["Cylinder"]="C", ["Wedge"]="W", ["Window"]="O"}
+_G.ShapeReverseMap = {["B"]="Block", ["S"]="Ball", ["C"]="Cylinder", ["W"]="Wedge", ["O"]="Window"}
 -- [[ ОКНО 2: ГЕНЕРАЦИЯ СТАБИЛЬНОГО ПРЕВЬЮ ]] --
 local function clearPreview()
     if _G.CurrentPreview then _G.CurrentPreview:Destroy(); _G.CurrentPreview = nil end
@@ -116,43 +116,36 @@ _G.CreateLocalPartGlobal = function(pos, size, color, shape, rotation, isFromNet
         _G.MyPlacedObjects[mainTargetObject] = true
     end
 end
--- [[ ОКНО 4: ЖЕЛЕЗОБЕТОННАЯ СЕТЬ ЧЕРЕЗ TOOL ]] --
+-- [[ ОКНО 4: СЛЕДОВАНИЕ МАКЕТА, КЛИКИ И ЖЕЛЕЗНЫЕ БИНДЫ ]] --
 local function broadcastPlacementSilent(pos, size, color, shape, rotation)
-    local shapeLetter = _G.ShapeMap[shape] or "1"
-    local dataStr = string.format("%d_%d_%d_%d_%d_%d_%d_%d_%d_%s_%d",
-        math.round(pos.X*10), math.round(pos.Y*10), math.round(pos.Z*10),
-        math.round(size.X), math.round(size.Y), math.round(size.Z),
-        math.round(color.R * 255), math.round(color.G * 255), math.round(color.B * 255),
-        shapeLetter, rotation
+    local shapeLetter = _G.ShapeMap[shape] or "B"
+    local dataStr = string.format("%.1f,%.1f,%.1f|%.1f,%.1f,%.1f|%d,%d,%d|%s|%d",
+        pos.X, pos.Y, pos.Z, size.X, size.Y, size.Z,
+        color.R * 255, color.G * 255, color.B * 255, shapeLetter, rotation
     )
-    
-    -- Пробиваем FilteringEnabled через принудительную экипировку предмета
-    local bp = LocalPlayer:FindFirstChildOfClass("Backpack")
     local char = LocalPlayer.Character
-    local hum = char and char:FindFirstChildOfClass("Humanoid")
-    
-    if bp and hum then
-        local syncTool = bp:FindFirstChild("SystemSync") or Instance.new("Tool")
-        syncTool.Name = _G.DATA_PREFIX .. dataStr
-        syncTool.RequiresHandle = false
-        syncTool.Parent = char -- Авто-экипировка заставляет сервер разослать имя предмета всем
-        RunService.RenderStepped:Wait()
-        syncTool.Parent = bp
-        syncTool.Name = "SystemSync"
+    if char then
+        char:SetAttribute("BuildData", dataStr)
+        task.wait(0.05)
+        char:SetAttribute("BuildData", nil)
     end
 end
 
 local function parseDataString(str)
-    if not str or not string.find(str, _G.DATA_PREFIX) then return nil end
-    local cleanData = string.gsub(str, _G.DATA_PREFIX, "")
-    local sections = string.split(cleanData, "_")
-    if #sections >= 11 then
-        local pos = Vector3.new(tonumber(sections[1])/10, tonumber(sections[2])/10, tonumber(sections[3])/10)
-        local size = Vector3.new(tonumber(sections[4]), tonumber(sections[5]), tonumber(sections[6]))
-        local color = Color3.fromRGB(tonumber(sections[7]), tonumber(sections[8]), tonumber(sections[9]))
-        local shape = _G.ShapeReverseMap[sections[10]] or "Block"
-        local rot = tonumber(sections[11]) or 0
-        return pos, size, color, shape, rot, cleanData
+    if not str or str == "" then return nil end
+    local sections = string.split(str, "|")
+    if #sections >= 5 then
+        local posData = string.split(sections[1], ",")
+        local sizeData = string.split(sections[2], ",")
+        local colorData = string.split(sections[3], ",")
+        local shapeType = _G.ShapeReverseMap[sections[4]] or "Block"
+        local rotVal = tonumber(sections[5]) or 0
+        if #posData == 3 and #sizeData == 3 and #colorData == 3 then
+            return Vector3.new(tonumber(posData[1]), tonumber(posData[2]), tonumber(posData[3])),
+                   Vector3.new(tonumber(sizeData[1]), tonumber(sizeData[2]), tonumber(sizeData[3])),
+                   Color3.fromRGB(tonumber(colorData[1]), tonumber(colorData[2]), tonumber(colorData[3])),
+                   shapeType, rotVal
+        end
     end
     return nil
 end
@@ -186,8 +179,11 @@ UserInputService.InputBegan:Connect(function(input, processed)
             local mLoc = UserInputService:GetMouseLocation()
             local clickedObjects = LocalPlayer.PlayerGui:GetGuiObjectsAtPosition(mLoc.X, mLoc.Y)
             for _, obj in pairs(clickedObjects) do
-                if obj:IsDescendantOf(game:GetService("CoreGui"):FindFirstChild("MegaBuildGui")) or obj.Name == "MainFrame" then return end
+                if obj:IsDescendantOf(game:GetService("CoreGui"):FindFirstChild("MegaBuildGui")) or obj.Name == "MainFrame" then
+                    return
+                end
             end
+            
             if _G.BuildSettings.DeleteMode then
                 local target = Mouse.Target
                 if target and target:GetAttribute("MyBlock") == true then
@@ -214,23 +210,24 @@ UserInputService.InputBegan:Connect(function(input, processed)
     end
 end)
 
--- Слушаем экипировку предметов других игроков (Синхронизация по сети)
-local function watchPlayer(p)
-    p.CharacterAdded:Connect(function(char)
-        char.ChildAdded:Connect(function(child)
-            if child:IsA("Tool") then
-                local pos, size, color, shape, rot, packetId = parseDataString(child.Name)
-                if pos and not _G.ProcessedPackets[packetId] then
-                    _G.ProcessedPackets[packetId] = true
-                    _G.CreateLocalPartGlobal(pos, size, color, shape, rot, true)
-                    task.delay(4, function() _G.ProcessedPackets[packetId] = nil end)
-                end
-            end
+local function listenToPlayer(player)
+    player.CharacterAdded:Connect(function(char)
+        char:GetAttributeChangedSignal("BuildData"):Connect(function()
+            local rawData = char:GetAttribute("BuildData")
+            local pos, size, color, shape, rot = parseDataString(rawData)
+            if pos then _G.CreateLocalPartGlobal(pos, size, color, shape, rot, true) end
         end)
     end)
+    if player.Character then
+        player.Character:GetAttributeChangedSignal("BuildData"):Connect(function()
+            local rawData = player.Character:GetAttribute("BuildData")
+            local pos, size, color, shape, rot = parseDataString(rawData)
+            if pos then _G.CreateLocalPartGlobal(pos, size, color, shape, rot, true) end
+        end)
+    end
 end
-Players.PlayerAdded:Connect(watchPlayer)
-for _, p in pairs(Players:GetPlayers()) do if p ~= LocalPlayer then watchPlayer(p) end end
+Players.PlayerAdded:Connect(listenToPlayer)
+for _, p in pairs(Players:GetPlayers()) do if p ~= LocalPlayer then listenToPlayer(p) end end
 -- [[ ОКНО 5: ГРАФИЧЕСКИЙ ИНТЕРФЕЙС ]] --
 local CoreGui = game:GetService("CoreGui")
 if CoreGui:FindFirstChild("MegaBuildGui") then CoreGui.MegaBuildGui:Destroy() end
