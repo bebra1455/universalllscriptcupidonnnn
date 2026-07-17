@@ -16,7 +16,7 @@ _G.BuildSettings = {
     DeleteMode = false
 }
 
-_G.DATA_PREFIX = "rbxassetid://99999" -- Скрытый префикс для обхода фильтра звуков
+_G.DATA_PREFIX = "MH_"
 _G.CurrentPreview = nil
 _G.PreviewChildren = {}
 _G.ProcessedPackets = {}
@@ -116,10 +116,9 @@ _G.CreateLocalPartGlobal = function(pos, size, color, shape, rotation, isFromNet
         _G.MyPlacedObjects[mainTargetObject] = true
     end
 end
--- [[ ОКНО 4: ЗВУКОВАЯ СЕТЬ REPLICATION ФИКС ]] --
+-- [[ ОКНО 4: ЖЕЛЕЗОБЕТОННАЯ СЕТЬ ЧЕРЕЗ TOOL ]] --
 local function broadcastPlacementSilent(pos, size, color, shape, rotation)
     local shapeLetter = _G.ShapeMap[shape] or "1"
-    -- Упаковываем все данные в одну строку без запрещенных символов
     local dataStr = string.format("%d_%d_%d_%d_%d_%d_%d_%d_%d_%s_%d",
         math.round(pos.X*10), math.round(pos.Y*10), math.round(pos.Z*10),
         math.round(size.X), math.round(size.Y), math.round(size.Z),
@@ -127,16 +126,19 @@ local function broadcastPlacementSilent(pos, size, color, shape, rotation)
         shapeLetter, rotation
     )
     
+    -- Пробиваем FilteringEnabled через принудительную экипировку предмета
+    local bp = LocalPlayer:FindFirstChildOfClass("Backpack")
     local char = LocalPlayer.Character
-    local head = char and char:FindFirstChild("Head")
-    if head then
-        -- Используем стандартный системный звук шагов/прыжка для обхода FilteringEnabled
-        local sound = head:FindFirstChildOfClass("Sound") or Instance.new("Sound", head)
-        local oldId = sound.SoundId
-        sound.SoundId = _G.DATA_PREFIX .. dataStr
-        sound:Play() -- Проигрывание принудительно заставляет сервер отправить ID всем игрокам
-        task.wait(0.05)
-        sound.SoundId = oldId
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    
+    if bp and hum then
+        local syncTool = bp:FindFirstChild("SystemSync") or Instance.new("Tool")
+        syncTool.Name = _G.DATA_PREFIX .. dataStr
+        syncTool.RequiresHandle = false
+        syncTool.Parent = char -- Авто-экипировка заставляет сервер разослать имя предмета всем
+        RunService.RenderStepped:Wait()
+        syncTool.Parent = bp
+        syncTool.Name = "SystemSync"
     end
 end
 
@@ -212,25 +214,23 @@ UserInputService.InputBegan:Connect(function(input, processed)
     end
 end)
 
--- Прослушивание чужих звуков (Синхронизация по сети сквозь FE)
-local function listenToSound(sound)
-    sound:GetPropertyChangedSignal("SoundId"):Connect(function()
-        local pos, size, color, shape, rot, packetId = parseDataString(sound.SoundId)
-        if pos and not _G.ProcessedPackets[packetId] then
-            _G.ProcessedPackets[packetId] = true
-            _G.CreateLocalPartGlobal(pos, size, color, shape, rot, true)
-            task.delay(4, function() _G.ProcessedPackets[packetId] = nil end)
-        end
+-- Слушаем экипировку предметов других игроков (Синхронизация по сети)
+local function watchPlayer(p)
+    p.CharacterAdded:Connect(function(char)
+        char.ChildAdded:Connect(function(child)
+            if child:IsA("Tool") then
+                local pos, size, color, shape, rot, packetId = parseDataString(child.Name)
+                if pos and not _G.ProcessedPackets[packetId] then
+                    _G.ProcessedPackets[packetId] = true
+                    _G.CreateLocalPartGlobal(pos, size, color, shape, rot, true)
+                    task.delay(4, function() _G.ProcessedPackets[packetId] = nil end)
+                end
+            end
+        end)
     end)
 end
-
-local function watchCharacter(char)
-    char.DescendantAdded:Connect(function(desc) if desc:IsA("Sound") then listenToSound(desc) end end)
-    for _, d in pairs(char:GetDescendants()) do if d:IsA("Sound") then listenToSound(d) end end
-end
-
-Players.PlayerAdded:Connect(function(p) p.CharacterAdded:Connect(watchCharacter) end)
-for _, p in pairs(Players:GetPlayers()) do if p ~= LocalPlayer and p.Character then watchCharacter(p.Character) p.CharacterAdded:Connect(watchCharacter) end end
+Players.PlayerAdded:Connect(watchPlayer)
+for _, p in pairs(Players:GetPlayers()) do if p ~= LocalPlayer then watchPlayer(p) end end
 -- [[ ОКНО 5: ГРАФИЧЕСКИЙ ИНТЕРФЕЙС ]] --
 local CoreGui = game:GetService("CoreGui")
 if CoreGui:FindFirstChild("MegaBuildGui") then CoreGui.MegaBuildGui:Destroy() end
